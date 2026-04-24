@@ -1,6 +1,6 @@
 # WhiteRose Wordlist Forge
 
-WhiteRose Wordlist Forge is a mask-based charset wordlist generator for authorized security labs, CTFs, password auditing practice, and cybersecurity learning.
+WhiteRose Wordlist Forge is a hybrid and charset-based wordlist generator for security labs, CTFs, password auditing, and cybersecurity learning.
 
 ## Modes
 
