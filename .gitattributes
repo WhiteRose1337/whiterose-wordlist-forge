@@ -1,0 +1,8 @@
+* text=auto
+*.sh text eol=lf
+forge text eol=lf
+README.md text eol=lf
+DISCLAIMER.md text eol=lf
+LICENSE text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf

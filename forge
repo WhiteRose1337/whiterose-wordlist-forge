@@ -1,0 +1,449 @@
+#!/usr/bin/env python3
+
+import argparse
+import itertools
+import os
+import string
+import sys
+import time
+
+
+APP_NAME = "WhiteRose Wordlist Forge"
+APP_VERSION = "2.1.0"
+
+
+CHARSET_MAP = {
+    "?l": string.ascii_lowercase,
+    "?u": string.ascii_uppercase,
+    "?d": string.digits,
+    "?s": string.punctuation,
+    "?a": string.ascii_letters + string.digits + string.punctuation,
+}
+
+
+PRESETS = {
+    "pin4": "?d?d?d?d",
+    "pin6": "?d?d?d?d?d?d",
+    "lower6": "?l?l?l?l?l?l",
+    "lower8": "?l?l?l?l?l?l?l?l",
+    "alnum6": "?a?a?a?a?a?a",
+}
+
+
+COMMON_YEARS = ["2020", "2021", "2022", "2023", "2024", "2025", "2026"]
+COMMON_SYMBOLS = ["!", "@", "#", "$", "_", ".", "-"]
+COMMON_SUFFIXES = ["123", "1234", "12345", "007", "000", "111", "999"]
+
+
+LEET_MAP = {
+    "a": ["a", "@", "4"],
+    "e": ["e", "3"],
+    "i": ["i", "1", "!"],
+    "o": ["o", "0"],
+    "s": ["s", "$", "5"],
+    "t": ["t", "7"],
+}
+
+
+def print_banner():
+    print(f"{APP_NAME} v{APP_VERSION}")
+
+
+def format_number(value):
+    return f"{value:,}"
+
+
+def format_time(seconds):
+    if seconds < 0:
+        return "unknown"
+
+    seconds = int(seconds)
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def ensure_output_dir(output):
+    output_dir = os.path.dirname(output)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+
+def print_progress(written, total, start_time, last_update_time, force=False):
+    current_time = time.time()
+
+    if not force and current_time - last_update_time < 1:
+        return last_update_time
+
+    elapsed = current_time - start_time
+    speed = written / elapsed if elapsed > 0 else 0
+    remaining = max(total - written, 0)
+    eta = remaining / speed if speed > 0 else -1
+    percent = (written / total * 100) if total > 0 else 0
+
+    sys.stdout.write(
+        "\r"
+        f"Generated: {format_number(written)} / {format_number(total)} "
+        f"({percent:.2f}%) | "
+        f"Speed: {format_number(int(speed))}/sec | "
+        f"ETA: {format_time(eta)}"
+    )
+    sys.stdout.flush()
+
+    return current_time
+
+
+def parse_mask(mask):
+    tokens = []
+    index = 0
+
+    while index < len(mask):
+        token = mask[index:index + 2]
+
+        if token in CHARSET_MAP:
+            tokens.append(CHARSET_MAP[token])
+            index += 2
+        else:
+            raise ValueError(
+                f"Invalid mask token near: {mask[index:]}. "
+                "Supported tokens: ?l ?u ?d ?s ?a"
+            )
+
+    return tokens
+
+
+def estimate_mask_total(tokens):
+    total = 1
+    for charset in tokens:
+        total *= len(charset)
+    return total
+
+
+def generate_charset_mode(mask, output, max_lines=0, quiet=False):
+    tokens = parse_mask(mask)
+    total_estimated = estimate_mask_total(tokens)
+    total_to_generate = min(total_estimated, max_lines) if max_lines > 0 else total_estimated
+
+    ensure_output_dir(output)
+
+    written = 0
+    start_time = time.time()
+    last_update_time = start_time
+
+    with open(output, "w", encoding="utf-8", newline="\n") as file_handle:
+        for combo in itertools.product(*tokens):
+            word = "".join(combo)
+            file_handle.write(word + "\n")
+
+            written += 1
+
+            if not quiet:
+                last_update_time = print_progress(
+                    written=written,
+                    total=total_to_generate,
+                    start_time=start_time,
+                    last_update_time=last_update_time,
+                )
+
+            if max_lines > 0 and written >= max_lines:
+                break
+
+    if not quiet:
+        print_progress(written, total_to_generate, start_time, last_update_time, force=True)
+        print()
+
+    elapsed = time.time() - start_time
+    speed = written / elapsed if elapsed > 0 else 0
+
+    return {
+        "estimated_total": total_estimated,
+        "written": written,
+        "elapsed_seconds": elapsed,
+        "speed_per_second": speed,
+        "output": output,
+    }
+
+
+def read_seeds(path):
+    with open(path, "r", encoding="utf-8") as file:
+        return [line.strip() for line in file if line.strip() and not line.startswith("#")]
+
+
+def basic_variants(word):
+    variants = set()
+    variants.add(word)
+    variants.add(word.lower())
+    variants.add(word.upper())
+    variants.add(word.capitalize())
+    return variants
+
+
+def leet_variants(word, max_variants=100):
+    pools = []
+
+    for char in word.lower():
+        pools.append(LEET_MAP.get(char, [char]))
+
+    results = set()
+
+    for combo in itertools.product(*pools):
+        results.add("".join(combo))
+        if len(results) >= max_variants:
+            break
+
+    return results
+
+
+def generate_digit_suffixes(length):
+    if length <= 0:
+        return []
+
+    results = []
+    for combo in itertools.product(string.digits, repeat=length):
+        results.append("".join(combo))
+    return results
+
+
+def build_hybrid_words(args):
+    seeds = read_seeds(args.seeds)
+    words = set()
+
+    for seed in seeds:
+        words.update(basic_variants(seed))
+
+        if args.leet:
+            words.update(leet_variants(seed, args.max_leet_variants))
+
+    if args.combine:
+        for first, second in itertools.permutations(seeds, 2):
+            words.add(first + second)
+            words.add(first + "_" + second)
+            words.add(first + "." + second)
+            words.add(first + "-" + second)
+
+    suffixes = list(COMMON_SUFFIXES)
+
+    if args.years:
+        suffixes.extend(COMMON_YEARS)
+
+    if args.symbols:
+        suffixes.extend(COMMON_SYMBOLS)
+
+    if args.custom_suffix:
+        suffixes.extend(args.custom_suffix)
+
+    if args.suffix_digits > 0:
+        suffixes.extend(generate_digit_suffixes(args.suffix_digits))
+
+    expanded = set(words)
+
+    for word in list(words):
+        for suffix in suffixes:
+            expanded.add(word + suffix)
+
+    if args.custom_prefix:
+        for word in list(expanded):
+            for prefix in args.custom_prefix:
+                expanded.add(prefix + word)
+
+    filtered = {
+        word for word in expanded
+        if args.min_len <= len(word) <= args.max_len
+    }
+
+    return sorted(filtered)
+
+
+def save_words_stream(words, output, max_lines=0, quiet=False):
+    ensure_output_dir(output)
+
+    total = len(words)
+    total_to_write = min(total, max_lines) if max_lines > 0 else total
+
+    written = 0
+    start_time = time.time()
+    last_update_time = start_time
+
+    with open(output, "w", encoding="utf-8", newline="\n") as file_handle:
+        for word in words:
+            file_handle.write(word + "\n")
+
+            written += 1
+
+            if not quiet:
+                last_update_time = print_progress(
+                    written=written,
+                    total=total_to_write,
+                    start_time=start_time,
+                    last_update_time=last_update_time,
+                )
+
+            if max_lines > 0 and written >= max_lines:
+                break
+
+    if not quiet:
+        print_progress(written, total_to_write, start_time, last_update_time, force=True)
+        print()
+
+    elapsed = time.time() - start_time
+    speed = written / elapsed if elapsed > 0 else 0
+
+    return {
+        "estimated_total": total,
+        "written": written,
+        "elapsed_seconds": elapsed,
+        "speed_per_second": speed,
+        "output": output,
+    }
+
+
+def show_summary(result):
+    print("[OK] Wordlist generated successfully")
+    print(f"Estimated total: {format_number(result['estimated_total'])}")
+    print(f"Words written: {format_number(result['written'])}")
+    print(f"Elapsed time: {format_time(result['elapsed_seconds'])}")
+    print(f"Average speed: {format_number(int(result['speed_per_second']))}/sec")
+    print(f"Output: {result['output']}")
+
+
+def show_mask_help():
+    print("Mask tokens:")
+    print("  ?l  lowercase letters")
+    print("  ?u  uppercase letters")
+    print("  ?d  digits")
+    print("  ?s  symbols")
+    print("  ?a  lowercase + uppercase + digits + symbols")
+    print()
+    print("Examples:")
+    print("  forge charset --mask '?l?l?l?l?d?d'")
+    print("  forge charset --mask '?u?l?l?l?d?d?s'")
+    print("  forge charset --preset pin4")
+    print()
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description="WhiteRose Wordlist Forge - Hybrid and charset wordlist generator."
+    )
+
+    parser.add_argument("--version", action="store_true", help="Show version information")
+    parser.add_argument("--mask-help", action="store_true", help="Show mask token help")
+
+    subparsers = parser.add_subparsers(dest="command")
+
+    charset_parser = subparsers.add_parser("charset", help="Generate wordlist from charset mask")
+    charset_parser.add_argument("--mask", help="Mask pattern using tokens: ?l ?u ?d ?s ?a")
+    charset_parser.add_argument("--preset", choices=sorted(PRESETS.keys()), help="Use a built-in preset mask")
+    charset_parser.add_argument("--output", default="output/charset_wordlist.txt", help="Output wordlist path")
+    charset_parser.add_argument("--estimate-only", action="store_true", help="Only estimate combinations")
+    charset_parser.add_argument("--max-lines", type=int, default=0, help="Stop after writing N lines")
+    charset_parser.add_argument("--quiet", action="store_true", help="Disable live progress output")
+
+    hybrid_parser = subparsers.add_parser("hybrid", help="Generate wordlist from seed words and mutations")
+    hybrid_parser.add_argument("--seeds", required=True, help="Path to seed words file")
+    hybrid_parser.add_argument("--output", default="output/hybrid_wordlist.txt", help="Output wordlist path")
+    hybrid_parser.add_argument("--min-len", type=int, default=4, help="Minimum word length")
+    hybrid_parser.add_argument("--max-len", type=int, default=32, help="Maximum word length")
+    hybrid_parser.add_argument("--leet", action="store_true", help="Enable leetspeak mutations")
+    hybrid_parser.add_argument("--max-leet-variants", type=int, default=100, help="Max leet variants per seed")
+    hybrid_parser.add_argument("--combine", action="store_true", help="Combine seed words")
+    hybrid_parser.add_argument("--years", action="store_true", help="Add year suffixes")
+    hybrid_parser.add_argument("--symbols", action="store_true", help="Add symbol suffixes")
+    hybrid_parser.add_argument("--suffix-digits", type=int, default=0, help="Append all digit suffixes of N length")
+    hybrid_parser.add_argument("--custom-suffix", nargs="*", default=[], help="Custom suffix values")
+    hybrid_parser.add_argument("--custom-prefix", nargs="*", default=[], help="Custom prefix values")
+    hybrid_parser.add_argument("--estimate-only", action="store_true", help="Only estimate combinations")
+    hybrid_parser.add_argument("--max-lines", type=int, default=0, help="Stop after writing N lines")
+    hybrid_parser.add_argument("--quiet", action="store_true", help="Disable live progress output")
+
+    return parser
+
+
+def handle_charset(args):
+    if args.preset:
+        mask = PRESETS[args.preset]
+    elif args.mask:
+        mask = args.mask
+    else:
+        raise ValueError("You must provide --mask or --preset")
+
+    tokens = parse_mask(mask)
+    total = estimate_mask_total(tokens)
+
+    print_banner()
+    print("Mode: charset")
+    print(f"Mask: {mask}")
+    print(f"Estimated combinations: {format_number(total)}")
+
+    if args.estimate_only:
+        return
+
+    if total > 100_000_000 and args.max_lines == 0:
+        print()
+        print("[WARNING] This wordlist is very large.")
+        print("[WARNING] Use --estimate-only first, or set --max-lines.")
+        print("[WARNING] Generation was stopped for safety.")
+        return
+
+    result = generate_charset_mode(
+        mask=mask,
+        output=args.output,
+        max_lines=args.max_lines,
+        quiet=args.quiet,
+    )
+
+    show_summary(result)
+
+
+def handle_hybrid(args):
+    print_banner()
+    print("Mode: hybrid")
+    print(f"Seeds file: {args.seeds}")
+
+    words = build_hybrid_words(args)
+
+    print(f"Estimated words: {format_number(len(words))}")
+
+    if args.estimate_only:
+        return
+
+    result = save_words_stream(
+        words=words,
+        output=args.output,
+        max_lines=args.max_lines,
+        quiet=args.quiet,
+    )
+
+    show_summary(result)
+
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if args.version:
+        print(f"{APP_NAME} v{APP_VERSION}")
+        return
+
+    if args.mask_help:
+        show_mask_help()
+        return
+
+    if not args.command:
+        parser.print_help()
+        return
+
+    try:
+        if args.command == "charset":
+            handle_charset(args)
+        elif args.command == "hybrid":
+            handle_hybrid(args)
+    except Exception as error:
+        print(f"[ERROR] {error}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
